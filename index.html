@@ -8,6 +8,16 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script>
+  // Yanıp sönmeyi önlemek için tema erken uygulanır
+  (function(){
+    try{
+      var saved = localStorage.getItem('aoiFprTheme');
+      var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', theme);
+    }catch(e){ document.documentElement.setAttribute('data-theme','dark'); }
+  })();
+</script>
 <style>
   :root{
     --bg:#10161A;
@@ -25,6 +35,19 @@
     --disp:'Space Grotesk', sans-serif;
     --body:'Inter', sans-serif;
   }
+  html[data-theme="light"]{
+    --bg:#F3F6F5;
+    --panel:#FFFFFF;
+    --panel-2:#EBF0EE;
+    --line:#D7E0DC;
+    --trace:#2C8259;
+    --trace-bright:#17974F;
+    --amber:#AD7209;
+    --red:#C13B34;
+    --text:#141C19;
+    --text-dim:#4C5A54;
+    --text-faint:#84928B;
+  }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;}
   body{
@@ -35,6 +58,11 @@
     font-family:var(--body);
     line-height:1.5;
     min-height:100vh;
+    transition:background-color .2s ease, color .2s ease;
+  }
+  body, header.topbar, .gauge-card, .table-card, .proj-card, .dropzone, .toast,
+  thead th, tbody td, .status-chip, .file-pill, input[type=text], button{
+    transition:background-color .2s ease, border-color .2s ease, color .2s ease, box-shadow .2s ease;
   }
   ::selection{background:var(--trace);color:#04120a;}
 
@@ -176,6 +204,17 @@
   .toast.err{border-color:var(--red);}
 
   @media (prefers-reduced-motion: reduce){.led{animation:none;}}
+
+  /* ---------- theme toggle ---------- */
+  .topbar-right{display:flex;align-items:center;gap:10px;}
+  .theme-toggle{
+    display:flex;align-items:center;justify-content:center;
+    width:32px;height:32px;padding:0;
+    border:1px solid var(--line);background:var(--panel-2);border-radius:8px;
+    color:var(--text-dim);cursor:pointer;
+  }
+  .theme-toggle:hover{border-color:var(--trace);color:var(--trace-bright);}
+  .theme-toggle svg{width:16px;height:16px;display:block;}
 </style>
 </head>
 <body>
@@ -183,7 +222,10 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand"><span class="led"></span>AOI FPR<small>&nbsp;// inspection analytics</small></div>
-    <div class="status-chip" id="statusChip">VERİ BEKLENİYOR</div>
+    <div class="topbar-right">
+      <div class="status-chip" id="statusChip">VERİ BEKLENİYOR</div>
+      <button class="theme-toggle" id="themeToggle" type="button" title="Aydınlık/karanlık mod" aria-label="Aydınlık/karanlık mod"></button>
+    </div>
   </div>
 </header>
 
@@ -285,6 +327,22 @@
 <div class="toast" id="toast"></div>
 
 <script>
+/* ====================== TEMA (aydınlık/karanlık) ====================== */
+const SUN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
+const MOON_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+const themeToggleBtn = document.getElementById('themeToggle');
+function setThemeIcon(theme){
+  themeToggleBtn.innerHTML = theme === 'light' ? MOON_ICON : SUN_ICON;
+}
+setThemeIcon(document.documentElement.getAttribute('data-theme') || 'dark');
+themeToggleBtn.addEventListener('click', ()=>{
+  const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  const next = current === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  setThemeIcon(next);
+  try{ localStorage.setItem('aoiFprTheme', next); }catch(e){}
+});
+
 /* ====================== STATE ====================== */
 let rawRows = [];          // combined rows from all uploaded CSVs
 let seenRowKeys = new Set(); // dedup: aynı flag'in iki kez sayılmasını engeller
