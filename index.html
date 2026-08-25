@@ -275,6 +275,7 @@
     <div class="settings-row">
       <label for="sheetsUrl">Google Sheets Web App URL (opsiyonel):</label>
       <input type="text" id="sheetsUrl" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
+      <button id="loadSheetsBtn">Sheets'ten Oku</button>
       <button id="sendSheetsBtn" disabled>Sheets'e Gönder</button>
     </div>
   </section>
@@ -352,11 +353,12 @@ let projectDetail = {};     // { project: { "RefNo|NgReason": {false:n, ng:n} } 
 let loadedFiles = [];
 
 /* ====================== SHEETS URL — kalıcı saklama ====================== */
+const DEFAULT_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbwP4OqsSRuF8cGm48zm9yrGGzHJK1wY_R71WjyM8Yuqs7wa9XCpM1VoWf1uv_pty0o_hA/exec';
 const sheetsUrlInput = document.getElementById('sheetsUrl');
 try {
   const savedUrl = localStorage.getItem('aoiFprSheetsUrl');
-  if (savedUrl) sheetsUrlInput.value = savedUrl;
-} catch(e){ /* localStorage kullanılamıyorsa sessizce geç */ }
+  sheetsUrlInput.value = savedUrl || DEFAULT_SHEETS_URL;
+} catch(e){ sheetsUrlInput.value = DEFAULT_SHEETS_URL; }
 sheetsUrlInput.addEventListener('change', ()=>{
   try { localStorage.setItem('aoiFprSheetsUrl', sheetsUrlInput.value.trim()); } catch(e){}
 });
@@ -508,6 +510,10 @@ function processAll(){
 function computeOverallGauge(parsed){
   const total = parsed.length;
   const ng = parsed.filter(r=>r.isNg).length;
+  updateGauge(total, ng);
+}
+
+function updateGauge(total, ng){
   const fpr = total ? (ng/total*100) : 0;
   document.getElementById('gaugeNum').textContent = total ? fpr.toFixed(1)+'%' : '—';
   document.getElementById('gaugeSub').textContent = total ? `${ng} gerçek NG / ${total} flag` : 'gerçek NG / toplam flag';
@@ -649,6 +655,79 @@ function renderProjectDetails(){
   container.querySelectorAll('.proj-card-head').forEach(el=>{
     el.addEventListener('click', ()=> el.closest('.proj-card').classList.toggle('open'));
   });
+}
+
+/* ====================== GOOGLE SHEETS OKUMA ====================== */
+const MONTH_ABBR_LIST = ['Oca','Şub','Mar','Nis','May','Haz','Tem','Ağu','Eyl','Eki','Kas','Ara'];
+function monthLabelSortKey(label){
+  const m = /^([A-Za-zÇĞİÖŞÜçğıöşü]+)\.(\d{2})$/.exec(String(label||''));
+  if (!m) return 0;
+  const idx = MONTH_ABBR_LIST.indexOf(m[1]);
+  const yearFull = 2000 + parseInt(m[2], 10);
+  return yearFull*100 + (idx>=0 ? idx : 0);
+}
+
+document.getElementById('loadSheetsBtn').addEventListener('click', ()=> loadFromSheets(true));
+
+async function loadFromSheets(manualTrigger){
+  const url = sheetsUrlInput.value.trim();
+  if (!url){ if (manualTrigger) toast('Önce Apps Script Web App URL gir.', true); return; }
+  const btn = document.getElementById('loadSheetsBtn');
+  btn.disabled = true; const prevLabel = btn.textContent; btn.textContent = 'Okunuyor...';
+  document.getElementById('statusChip').textContent = 'SHEETS\'TEN OKUNUYOR...';
+  try{
+    const sep = url.includes('?') ? '&' : '?';
+    const res = await fetch(url + sep + 'action=read');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Bilinmeyen hata');
+
+    weeklyAgg = (data.weekly || []).map(r=>({
+      project:String(r.project), year:+r.year, week:+r.week, total:+r.total, ng:+r.ng, fpr:+r.fpr
+    }));
+    weeklyAgg.sort((a,b)=> a.project.localeCompare(b.project) || a.year-b.year || a.week-b.week);
+
+    monthlyAgg = (data.monthly || []).map(r=>({
+      project:String(r.project), label:String(r.month), sortKey:monthLabelSortKey(r.month),
+      total:+r.total, ng:+r.ng, fpr:+r.fpr
+    }));
+    monthlyAgg.sort((a,b)=> a.project.localeCompare(b.project) || a.sortKey-b.sortKey);
+
+    projectDetail = {};
+    (data.detail || []).forEach(r=>{
+      const proj = String(r.project);
+      if (!projectDetail[proj]) projectDetail[proj] = {};
+      const key = `${r.ref}|${r.reason}`;
+      projectDetail[proj][key] = {ref:String(r.ref), reason:String(r.reason), falseCall:+r.falseCall, ng:+r.ng};
+    });
+
+    renderWeeklyTable();
+    renderMonthlyTable();
+    renderProjectDetails();
+
+    const totalAll = monthlyAgg.reduce((s,r)=>s+r.total,0);
+    const ngAll = monthlyAgg.reduce((s,r)=>s+r.ng,0);
+    updateGauge(totalAll, ngAll);
+
+    document.getElementById('statusChip').textContent = `SHEETS'TEN OKUNDU · ${weeklyAgg.length} HAFTALIK KAYIT`;
+    document.getElementById('exportWeekly').disabled = !weeklyAgg.length;
+    document.getElementById('exportMonthly').disabled = !monthlyAgg.length;
+    document.getElementById('exportDetail').disabled = !Object.keys(projectDetail).length;
+    document.getElementById('sendSheetsBtn').disabled = false;
+
+    if (manualTrigger || weeklyAgg.length) {
+      toast(`Sheets'ten ${weeklyAgg.length} haftalık, ${monthlyAgg.length} aylık kayıt okundu.`);
+    }
+  }catch(err){
+    document.getElementById('statusChip').textContent = 'VERİ BEKLENİYOR';
+    toast('Sheets okuma hatası: ' + err.message, true);
+  }
+  btn.disabled = false; btn.textContent = prevLabel;
+}
+
+// Sheets ana depolama alanı olduğu için sayfa açılışında otomatik okumayı dene
+if (sheetsUrlInput.value.trim()) {
+  loadFromSheets(false);
 }
 
 /* ====================== EXPORT ====================== */
