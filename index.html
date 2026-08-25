@@ -287,10 +287,21 @@
 <script>
 /* ====================== STATE ====================== */
 let rawRows = [];          // combined rows from all uploaded CSVs
+let seenRowKeys = new Set(); // dedup: aynı flag'in iki kez sayılmasını engeller
 let weeklyAgg = [];         // computed weekly rows
 let monthlyAgg = [];        // computed monthly rows
 let projectDetail = {};     // { project: { "RefNo|NgReason": {false:n, ng:n} } }
 let loadedFiles = [];
+
+/* ====================== SHEETS URL — kalıcı saklama ====================== */
+const sheetsUrlInput = document.getElementById('sheetsUrl');
+try {
+  const savedUrl = localStorage.getItem('aoiFprSheetsUrl');
+  if (savedUrl) sheetsUrlInput.value = savedUrl;
+} catch(e){ /* localStorage kullanılamıyorsa sessizce geç */ }
+sheetsUrlInput.addEventListener('change', ()=>{
+  try { localStorage.setItem('aoiFprSheetsUrl', sheetsUrlInput.value.trim()); } catch(e){}
+});
 
 /* ====================== HELPERS ====================== */
 function toast(msg, isErr){
@@ -349,23 +360,40 @@ dropzone.addEventListener('drop', e=>{
 });
 fileInput.addEventListener('change', e=> handleFiles(e.target.files));
 
+// Bir flag'i benzersiz kılan alanların birleşimi — aynı satır tekrar
+// yüklenirse (aynı CSV iki kez, ya da lotlar çakışırsa) bu key ile yakalanır.
+function rowKey(r){
+  return [r.SerialId, r.StepNo, r.ViewNo, r.BlockNo, r.RefNo, r.NgReason, r.InspectionDate, r.RSJudgeTime]
+    .map(v => String(v ?? '')).join('|');
+}
+
 function handleFiles(fileList){
   const files = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.csv'));
   if (!files.length) return;
   let pending = files.length;
+  let totalNew = 0, totalSkipped = 0;
   files.forEach(file=>{
     Papa.parse(file, {
       header:true,
       skipEmptyLines:true,
       complete: res=>{
         const rows = res.data.filter(r => r.ProgramName && r.InspectionDate);
-        rawRows = rawRows.concat(rows);
-        loadedFiles.push({name:file.name, rows:rows.length});
+        const uniqueRows = [];
+        let skipped = 0;
+        rows.forEach(r=>{
+          const key = rowKey(r);
+          if (seenRowKeys.has(key)) { skipped++; return; }
+          seenRowKeys.add(key);
+          uniqueRows.push(r);
+        });
+        rawRows = rawRows.concat(uniqueRows);
+        loadedFiles.push({name:file.name, rows:uniqueRows.length, skipped});
+        totalNew += uniqueRows.length; totalSkipped += skipped;
         pending--;
         if (pending===0){
           renderFilePills();
           processAll();
-          toast(`${files.length} dosya yüklendi, ${rows.length>0?'işlendi.':''}`);
+          toast(`${files.length} dosya yüklendi, ${totalNew} yeni kayıt eklendi` + (totalSkipped ? `, ${totalSkipped} tekrar (duplicate) atlandı.` : '.'));
         }
       },
       error: err=>{ toast('Hata: ' + err.message, true); pending--; }
@@ -376,7 +404,7 @@ function handleFiles(fileList){
 function renderFilePills(){
   const wrap = document.getElementById('filePills');
   wrap.innerHTML = loadedFiles.map((f,i)=>
-    `<div class="file-pill"><b>${f.name}</b>&nbsp;· ${f.rows} satır<span class="rm" data-idx="${i}" title="Kaldır">✕</span></div>`
+    `<div class="file-pill"><b>${f.name}</b>&nbsp;· ${f.rows} yeni kayıt${f.skipped ? ` · ${f.skipped} duplicate atlandı` : ''}<span class="rm" data-idx="${i}" title="Kaldır">✕</span></div>`
   ).join('');
   wrap.querySelectorAll('.rm').forEach(el=>{
     el.addEventListener('click', ()=>{
@@ -608,6 +636,7 @@ document.getElementById('sendSheetsBtn').addEventListener('click', async ()=>{
       headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify(payload)
     });
+    try { localStorage.setItem('aoiFprSheetsUrl', url); } catch(e){}
     toast('Veri Google Sheets\'e gönderildi.');
   }catch(err){
     toast('Gönderim hatası: ' + err.message, true);
