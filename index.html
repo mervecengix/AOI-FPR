@@ -122,6 +122,15 @@
   .dropzone h3{font-family:var(--disp);font-size:16px;margin:0 0 6px;font-weight:600;}
   .dropzone p{color:var(--text-dim);font-size:13px;margin:0;}
   .dropzone input{display:none;}
+
+  /* ---------- CSV yükleme geçmişi ---------- */
+  .csv-history{margin-top:14px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);padding:12px 14px;}
+  .csv-history-head{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}
+  .csv-history-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid var(--line);font-size:13px;}
+  .csv-history-item:first-child{border-top:none;padding-top:0;}
+  .csv-history-item .meta{color:var(--text-faint);font-size:11px;margin-top:2px;}
+  .csv-history-item .actions{display:flex;gap:6px;flex-shrink:0;}
+  .csv-history-item button{font-size:11px;padding:4px 8px;}
   .file-pill-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px;}
   .file-pill{font-family:var(--mono);font-size:11.5px;background:var(--panel-2);border:1px solid var(--line);color:var(--text-dim);padding:6px 10px;border-radius:8px;display:flex;align-items:center;gap:8px;}
   .file-pill b{color:var(--text);font-weight:500;}
@@ -271,6 +280,14 @@
       <p>ya da tıklayıp dosya seç &middot; birden fazla dosya desteklenir</p>
     </div>
     <div class="file-pill-row" id="filePills"></div>
+
+    <div class="csv-history" id="csvHistoryWrap" style="display:none;">
+      <div class="csv-history-head">
+        <span>Geçmiş Yüklemeler (bu tarayıcı)</span>
+        <button class="small" id="clearHistoryBtn">Tümünü Temizle</button>
+      </div>
+      <div id="csvHistoryList"></div>
+    </div>
 
     <div class="settings-row">
       <label for="sheetsUrl">Google Sheets Web App URL (opsiyonel):</label>
@@ -458,6 +475,8 @@ function handleFiles(fileList){
       },
       error: err=>{ toast('Hata: ' + err.message, true); pending--; }
     });
+    // Geçmiş listesi için ham CSV içeriğini ayrıca sakla (bu tarayıcıda)
+    file.text().then(text => addCsvHistoryEntry(file.name, text)).catch(()=>{});
   });
 }
 
@@ -481,6 +500,122 @@ function recomputeFromScratch(){
   toast('Dosya listesi güncellendi. Kalan verilerle yeniden hesaplamak için sayfayı yenileyip dosyaları tekrar yükleyin.', false);
   renderFilePills();
 }
+
+/* ====================== CSV YÜKLEME GEÇMİŞİ (yalnızca bu tarayıcı) ====================== */
+const CSV_HISTORY_KEY = 'aoiFprCsvHistory';
+const CSV_HISTORY_MAX_ENTRIES = 15;
+const CSV_HISTORY_MAX_TOTAL_BYTES = 4 * 1024 * 1024; // ~4MB toplam güvenli sınır
+const CSV_HISTORY_MAX_SINGLE_BYTES = 2 * 1024 * 1024; // 2MB üstü dosyanın içeriğini saklama
+
+function loadCsvHistory(){
+  try{
+    const raw = localStorage.getItem(CSV_HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }catch(e){ return []; }
+}
+
+function saveCsvHistoryList(list){
+  let trimmed = list.slice(0, CSV_HISTORY_MAX_ENTRIES);
+  const totalBytes = l => l.reduce((s,e)=> s + (e.content ? e.content.length : 0), 0);
+  while (trimmed.length > 1 && totalBytes(trimmed) > CSV_HISTORY_MAX_TOTAL_BYTES){
+    trimmed.pop(); // en eski kayıtlar listenin sonunda (yeni kayıtlar başa ekleniyor)
+  }
+  try{
+    localStorage.setItem(CSV_HISTORY_KEY, JSON.stringify(trimmed));
+  }catch(e){
+    if (trimmed.length > 1){
+      saveCsvHistoryList(trimmed.slice(0, Math.ceil(trimmed.length/2)));
+      return;
+    }
+  }
+  renderCsvHistory();
+}
+
+function addCsvHistoryEntry(fileName, content){
+  const entry = {
+    id: Date.now() + '-' + Math.random().toString(36).slice(2,8),
+    fileName: fileName,
+    uploadedAt: new Date().toISOString(),
+    size: content.length,
+    content: content.length <= CSV_HISTORY_MAX_SINGLE_BYTES ? content : null
+  };
+  const list = loadCsvHistory();
+  list.unshift(entry);
+  saveCsvHistoryList(list);
+}
+
+function formatBytes(n){
+  if (!n) return '0 KB';
+  if (n < 1024*1024) return Math.round(n/1024) + ' KB';
+  return (n/(1024*1024)).toFixed(1) + ' MB';
+}
+
+function formatHistoryDate(iso){
+  const d = new Date(iso);
+  return d.toLocaleDateString('tr-TR') + ' ' + d.toLocaleTimeString('tr-TR', {hour:'2-digit', minute:'2-digit'});
+}
+
+function renderCsvHistory(){
+  const list = loadCsvHistory();
+  const wrap = document.getElementById('csvHistoryWrap');
+  const listEl = document.getElementById('csvHistoryList');
+  if (!list.length){ wrap.style.display = 'none'; listEl.innerHTML = ''; return; }
+  wrap.style.display = 'block';
+  listEl.innerHTML = list.map(e => `
+    <div class="csv-history-item">
+      <div>
+        <b>${e.fileName}</b>
+        <div class="meta">${formatHistoryDate(e.uploadedAt)} · ${formatBytes(e.size)}${e.content ? '' : ' · içerik saklanamadı (çok büyük)'}</div>
+      </div>
+      <div class="actions">
+        ${e.content ? `<button class="small" data-view="${e.id}">Tekrar Yükle</button>` : ''}
+        <button class="small" data-del="${e.id}">Sil</button>
+      </div>
+    </div>
+  `).join('');
+  listEl.querySelectorAll('[data-view]').forEach(btn=>{
+    btn.addEventListener('click', ()=> reloadCsvFromHistory(btn.dataset.view));
+  });
+  listEl.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const remaining = loadCsvHistory().filter(e=> e.id !== btn.dataset.del);
+      saveCsvHistoryList(remaining);
+    });
+  });
+}
+
+function reloadCsvFromHistory(id){
+  const entry = loadCsvHistory().find(e=> e.id === id);
+  if (!entry || !entry.content){ toast('Bu dosyanın içeriği saklanmamış.', true); return; }
+  Papa.parse(entry.content, {
+    header:true,
+    skipEmptyLines:true,
+    complete: res=>{
+      const rows = res.data.filter(r => r.ProgramName && r.InspectionDate);
+      const uniqueRows = [];
+      let skipped = 0;
+      rows.forEach(r=>{
+        const key = rowKey(r);
+        if (seenRowKeys.has(key)) { skipped++; return; }
+        seenRowKeys.add(key);
+        uniqueRows.push(r);
+      });
+      rawRows = rawRows.concat(uniqueRows);
+      loadedFiles.push({name: entry.fileName + ' (geçmişten)', rows: uniqueRows.length, skipped});
+      renderFilePills();
+      processAll();
+      toast(`${entry.fileName} geçmişten tekrar yüklendi: ${uniqueRows.length} yeni kayıt` + (skipped ? `, ${skipped} duplicate atlandı.` : '.'));
+    },
+    error: err=>{ toast('Hata: ' + err.message, true); }
+  });
+}
+
+document.getElementById('clearHistoryBtn').addEventListener('click', ()=>{
+  try{ localStorage.removeItem(CSV_HISTORY_KEY); }catch(e){}
+  renderCsvHistory();
+});
+
+renderCsvHistory();
 
 /* ====================== CORE PROCESSING ====================== */
 function processAll(){
