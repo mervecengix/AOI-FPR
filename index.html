@@ -634,6 +634,7 @@ function processAll(){
   computeWeekly(parsed);
   computeMonthly(parsed);
   computeProjectDetail(parsed);
+  computeProjectDetailMonthly(parsed);
 
   document.getElementById('statusChip').textContent = `${parsed.length} FLAG İŞLENDİ`;
   document.getElementById('sendSheetsBtn').disabled = false;
@@ -698,6 +699,21 @@ function computeProjectDetail(parsed){
     else projectDetail[r.project][key].falseCall++;
   });
   renderProjectDetails();
+}
+
+// Sheets'e aylık kırılımla göndermek için: { project: { "Ağu.26": { "ref|reason": {ref,reason,falseCall,ng} } } }
+let projectDetailMonthly = {};
+function computeProjectDetailMonthly(parsed){
+  projectDetailMonthly = {};
+  parsed.forEach(r=>{
+    const mk = monthKey(r.date);
+    if (!projectDetailMonthly[r.project]) projectDetailMonthly[r.project] = {};
+    if (!projectDetailMonthly[r.project][mk]) projectDetailMonthly[r.project][mk] = {};
+    const key = `${r.ref}|${r.reason}`;
+    if (!projectDetailMonthly[r.project][mk][key]) projectDetailMonthly[r.project][mk][key] = {ref:r.ref, reason:r.reason, falseCall:0, ng:0};
+    if (r.isNg) projectDetailMonthly[r.project][mk][key].ng++;
+    else projectDetailMonthly[r.project][mk][key].falseCall++;
+  });
 }
 
 /* ====================== RENDER: WEEKLY ====================== */
@@ -804,6 +820,42 @@ function monthLabelSortKey(label){
 
 document.getElementById('loadSheetsBtn').addEventListener('click', ()=> loadFromSheets(true));
 
+/**
+ * JSONP ile istek: fetch()'in aksine tarayıcı CORS kontrolü uygulamaz
+ * (bir <script> etiketi gibi davranır), Apps Script GET yanıtlarında
+ * sık görülen "Failed to fetch" / CORS sorununu tamamen bypass eder.
+ */
+function jsonpRequest(url, timeoutMs){
+  return new Promise((resolve, reject)=>{
+    const cbName = 'aoiFprCb_' + Date.now() + '_' + Math.floor(Math.random()*1e6);
+    const script = document.createElement('script');
+    let done = false;
+    const timer = setTimeout(()=>{
+      if (done) return; done = true;
+      cleanup();
+      reject(new Error('Zaman aşımı — Apps Script yanıt vermedi (deploy/izin sorunu olabilir)'));
+    }, timeoutMs || 15000);
+    function cleanup(){
+      delete window[cbName];
+      script.remove();
+      clearTimeout(timer);
+    }
+    window[cbName] = (data)=>{
+      if (done) return; done = true;
+      cleanup();
+      resolve(data);
+    };
+    script.onerror = ()=>{
+      if (done) return; done = true;
+      cleanup();
+      reject(new Error('URL\'e ulaşılamadı — Web App URL\'i kontrol et'));
+    };
+    const sep = url.includes('?') ? '&' : '?';
+    script.src = url + sep + 'callback=' + cbName;
+    document.body.appendChild(script);
+  });
+}
+
 async function loadFromSheets(manualTrigger){
   const url = sheetsUrlInput.value.trim();
   if (!url){ if (manualTrigger) toast('Önce Apps Script Web App URL gir.', true); return; }
@@ -811,10 +863,7 @@ async function loadFromSheets(manualTrigger){
   btn.disabled = true; const prevLabel = btn.textContent; btn.textContent = 'Okunuyor...';
   document.getElementById('statusChip').textContent = 'SHEETS\'TEN OKUNUYOR...';
   try{
-    const sep = url.includes('?') ? '&' : '?';
-    const res = await fetch(url + sep + 'action=read');
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+    const data = await jsonpRequest(url);
     if (!data.ok) throw new Error(data.error || 'Bilinmeyen hata');
 
     weeklyAgg = (data.weekly || []).map(r=>({
@@ -828,12 +877,15 @@ async function loadFromSheets(manualTrigger){
     }));
     monthlyAgg.sort((a,b)=> a.project.localeCompare(b.project) || a.sortKey-b.sortKey);
 
+    // Sheets'teki detay artık aylık kırılımlı; sitedeki özet kartı için aylar toplanıyor
     projectDetail = {};
     (data.detail || []).forEach(r=>{
       const proj = String(r.project);
       if (!projectDetail[proj]) projectDetail[proj] = {};
       const key = `${r.ref}|${r.reason}`;
-      projectDetail[proj][key] = {ref:String(r.ref), reason:String(r.reason), falseCall:+r.falseCall, ng:+r.ng};
+      if (!projectDetail[proj][key]) projectDetail[proj][key] = {ref:String(r.ref), reason:String(r.reason), falseCall:0, ng:0};
+      projectDetail[proj][key].falseCall += (+r.falseCall || 0);
+      projectDetail[proj][key].ng += (+r.ng || 0);
     });
 
     renderWeeklyTable();
@@ -895,8 +947,10 @@ document.getElementById('sendSheetsBtn').addEventListener('click', async ()=>{
   const payload = {
     weekly: weeklyAgg.map(r=>({project:r.project, year:r.year, week:r.week, total:r.total, ng:r.ng, fpr:+r.fpr.toFixed(2)})),
     monthly: monthlyAgg.map(r=>({project:r.project, month:r.label, total:r.total, ng:r.ng, fpr:+r.fpr.toFixed(2)})),
-    detail: Object.entries(projectDetail).flatMap(([proj, combos])=>
-      Object.values(combos).map(c=>({project:proj, ref:c.ref, reason:c.reason, falseCall:c.falseCall, ng:c.ng}))
+    detail: Object.entries(projectDetailMonthly).flatMap(([proj, months])=>
+      Object.entries(months).flatMap(([month, combos])=>
+        Object.values(combos).map(c=>({project:proj, month, ref:c.ref, reason:c.reason, falseCall:c.falseCall, ng:c.ng}))
+      )
     ),
     sentAt: new Date().toISOString()
   };
